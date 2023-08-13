@@ -2,8 +2,47 @@ use std::iter::Peekable;
 use std::str::Chars;
 
 #[derive(Debug)]
-struct Tokenizer<'a> {
-    input: Peekable<Chars<'a>>,
+struct RewindAndPeekable {
+    input: String,
+    pos: usize
+}
+
+impl RewindAndPeekable {
+
+    fn new(input: impl AsRef<str>) -> Self {
+        RewindAndPeekable {
+            input: input.as_ref().to_string(),
+            pos: 0
+        }
+    }
+    fn peek(&mut self) -> Option<char> {
+        if self.pos >= self.input.len() {
+            return None;
+        } else {
+            return self.input.chars().nth(self.pos);
+        }
+    }
+
+    fn next(&mut self) -> Option<char> {
+        if self.pos >= self.input.len() {
+            return None;
+        } else {
+            let result = self.input.chars().nth(self.pos);
+            self.pos += 1;
+            return result
+        }
+    }
+
+    fn reset(&mut self, pos: usize) {
+        assert!(pos < self.input.len());
+        self.pos = pos;
+    }
+
+}
+
+#[derive(Debug)]
+struct Tokenizer {
+    input: RewindAndPeekable,
     pos: usize,
     line: usize,
     col: usize,
@@ -65,9 +104,9 @@ macro_rules! token_arm {
     };
 }
 
-impl<'a> Tokenizer<'a> {
-    fn new(input: &'a str) -> Self {
-        Tokenizer{ input: input.chars().peekable(), pos: 0, line: 1, col: 0}
+impl Tokenizer {
+    fn new(input: &str) -> Self {
+        Tokenizer{ input: RewindAndPeekable::new(input), pos: 0, line: 1, col: 0}
     }
 
     fn mark(&self) -> usize {
@@ -75,17 +114,18 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn reset(&mut self, new_pos: usize)  {
-        self.pos = new_pos
+        self.pos = new_pos;
+        self.input.reset(new_pos);
     }
 
-    fn peek_ch(&mut self) -> Option<&char> {
+    fn peek_ch(&mut self) -> Option<char> {
         self.input.peek()
     }
     // credit: from Erik Grinaker's toydb sql parser
     // this is pretty cool, it uses peekable to ensure next token satifies
     // predicate, i.e. isdigit(). if it doesn't it will return early via ?
     fn next_if<F: Fn(char) -> bool>(&mut self, predicate: F) -> Option<char> {
-        self.input.peek().filter(|&c| predicate(*c))?;
+        self.input.peek().filter(|c| predicate(*c))?;
         self.consume_next()
     }
 
@@ -191,14 +231,14 @@ impl<'a> Tokenizer<'a> {
         loop {
             let c = self.input.peek();
             println!("c: {:?}", c);
-            if let Some(&'\'') = c {
+            if let Some('\'') = c {
                 println!("finished literals");
                 self.consume_next();
                 break;
             } else {
                 println!("current ch: {:?}", c);
                 match c { 
-                    Some(&'\\') => {
+                    Some('\\') => {
                         println!("scan_literal found \\");
                         let escaped_char = self.scan_escaped_char();
                         println!("escaped_char: {:?}", escaped_char);
@@ -206,7 +246,7 @@ impl<'a> Tokenizer<'a> {
                             chars.push(escaped_char)
                         }
                     },
-                    Some(&c) => {
+                    Some(c) => {
                         chars.push(Char { 
                             ch: format!("{}", c)
                         });
@@ -302,4 +342,23 @@ pub mod test {
             panic!("No Char parsed");
         }
     }
+    
+    #[test]
+    pub fn test_scan_and_rewind_then_scan() {
+        let mut tokenizer = Tokenizer::new(r#"a b c"#);
+        let tok = tokenizer.scan();
+        let ch = tok.map(|t| t.ttype);
+        assert_eq!(ch, Some(TokenType::Identifier("a".to_string())));
+        let tok = tokenizer.scan();
+        let ch = tok.map(|t| t.ttype);
+        assert_eq!(ch, Some(TokenType::Identifier("b".to_string())));
+        let tok = tokenizer.scan();
+        let ch = tok.map(|t| t.ttype);
+        assert_eq!(ch, Some(TokenType::Identifier("c".to_string())));
+        tokenizer.reset(2);
+        let tok = tokenizer.scan();
+        let ch = tok.map(|t| t.ttype);
+        assert_eq!(ch, Some(TokenType::Identifier("b".to_string())));
+    }
+    
 }
