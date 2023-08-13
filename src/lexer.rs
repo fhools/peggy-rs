@@ -175,7 +175,6 @@ impl<'a> Tokenizer<'a> {
             Some(_) => {
                 // This should never happen
                 unreachable!("scan_leftangle got unexpected char");
-                None
             },
             None => {
                 Some(Token {
@@ -258,7 +257,8 @@ impl<'a> Tokenizer<'a> {
 
 }
 pub mod test { 
-    use super::*;
+    #[allow(unused_imports)]
+    use super::{Tokenizer, Token, TokenType};
 
     #[test]
     pub fn test_consumes_whitespace() {
