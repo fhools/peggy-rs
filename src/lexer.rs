@@ -1,5 +1,56 @@
 use std::iter::Peekable;
 use std::str::Chars;
+/*
+ From paper. We have it here for reference and to see which lexical components 
+ still need to be implement it to lex.
+
+Below each rule is the list TokenType variant that is required
+to lex the rule
+
+ [x] Grammar <- Spacing Definition+ EndOfFile       
+        Identifier, Asterisk, LeftArrow
+ [x] Definition <- Identifier LEFTARROW Expression 
+        Identifier, LeftArrow
+ [x] Expression <- Sequence (SLASH Sequence)*
+        LeftArrow, ForwardSlash. Asterick, OpenParen, CloseParen
+ [x] Sequence <- Prefix*
+        LeftArrow, Asterick, Identifier
+ [x] Prefix  <- (AND / NOT)? Suffix
+        Question, LeftArrow ForwardSlash, Identifier
+ [x] Suffix <- Primary (QUESTION / STAR / PLUS)? 
+        Identifier, LeftArrow, Question, Asterisk, Plus, OpenParen/CloseParen
+ [x] Primary <- Identifier !LEFTARROW
+                / OPEN Expression CLOSE 
+                / Literal / Class / DOT
+        Identifier, ForwardSlash, LeftArrow, Not, Question 
+ # Lexical syntax
+ [x] Identifier <- IdentStart IdentCont* Spacing
+ [x] IdentStart <- [a-zA-Z]
+ [x] IdentCont <- IdentStart / [0-9]
+ [x] Literal <-  [’] (![’] Char)* [’] Spacing
+ [x]            / ["] (!["] Char)* ["] Spacing
+ [x] Class <- ’[’ (!’]’ Range)* ’]’ Spacing 
+ [x] Range <- Char ’-’ Char / Char
+ [x] Char <- ’\\’ [nrt’"\[\]\\]
+ [x]        / ’\\’ [0-2][0-7][0-7] 
+ []        / ’\\’ [0-7][0-7]?
+ [ ]        / !’\\’ .
+ [ ] LEFTARROW <- ’<-’ Spacing 
+ [ ] SLASH <- ’/’ Spacing 
+ [ ] AND <- ’&’ Spacing 
+ [ ] NOT <- ’!’ Spacing 
+ [ ] QUESTION <- ’?’ Spacing 
+ [ ] STAR <- ’*’ Spacing 
+ [ ] PLUS <- ’+’ Spacing 
+ [ ] OPEN <- ’(’ Spacing 
+ [ ] CLOSE <- ’)’ Spacing 
+ [ ] DOT <- ’.’ Spacing
+ [ ] Spacing <- (Space / Comment)*
+ [ ] Comment <- ’#’ (!EndOfLine .)* EndOfLine 
+ [ ] Space <- ’ ’ / ’\t’ / EndOfLine 
+ [ ] EndOfLine <- ’\r\n’ / ’\n’ / ’\r’
+ [ ] EndOfFile <- !.
+*/
 
 #[derive(Debug)]
 struct RewindAndPeekable {
@@ -82,6 +133,16 @@ enum TokenType {
 struct Char {
     ch: String
 }
+struct  VecChar<'a> (&'a Vec<Char>);
+
+impl<'a>  From<VecChar<'a>> for String {
+    fn from(value: VecChar) -> Self {
+        value.0.iter()
+            .map(|ch| ch.ch.clone())
+            .collect::<Vec<String>>()
+            .join("")
+    }
+}
 
 #[derive(Debug, PartialEq)]
 struct Token {
@@ -90,6 +151,23 @@ struct Token {
     col: usize
 }
 
+impl Token {
+    fn is_identifier(&self) -> bool {
+        matches!(self.ttype, TokenType::Literal(_)) 
+    }
+
+    fn identifier_as_string(&self) -> Option<String> {
+        match self.ttype {
+            TokenType::Identifier(ref ident) => {
+                Some(ident.clone())
+            },
+            _ => {
+                println!("failed: tok = {:?}", self.ttype);
+                None
+            }
+        }
+    }
+}
 #[macro_export]
 macro_rules! token_arm { 
     ($self:ident, $var:path) => {
@@ -298,7 +376,7 @@ impl Tokenizer {
 }
 pub mod test { 
     #[allow(unused_imports)]
-    use super::{Tokenizer, Token, TokenType};
+    use super::{Tokenizer, Token, TokenType, VecChar};
 
     #[test]
     pub fn test_consumes_whitespace() {
@@ -323,11 +401,14 @@ pub mod test {
     #[test]
     pub fn test_scan_identifier() {
         let mut tokenizer = Tokenizer::new("test <- nonterminal");
-        let tok = tokenizer.scan();
-        if let Some(Token{ ttype: TokenType::Identifier(_), ..}) = tok {
-        } else {
-            panic!("Expected identifier");
-        }
+        let tok = tokenizer.scan().map(|t| t.ttype);
+        let tok2 = tokenizer.scan().map(|t| t.ttype);
+        let tok3 = tokenizer.scan().map(|t| t.ttype);
+        let tok4 = tokenizer.scan();
+        assert_eq!(tok, Some(TokenType::Identifier("test".into())));
+        assert_eq!(tok2, Some(TokenType::LeftArrow));
+        assert_eq!(tok3, Some(TokenType::Identifier("nonterminal".into())));
+        assert_eq!(tok4, None);
     }
 
     
@@ -360,5 +441,21 @@ pub mod test {
         let ch = tok.map(|t| t.ttype);
         assert_eq!(ch, Some(TokenType::Identifier("b".to_string())));
     }
-    
+    #[test]
+    pub fn test_scan_peg_grammar() {
+        let mut tokenizer = Tokenizer::new(
+            r#"Literal <- ['] (!['] Char)* ['] Spacing
+            / ["] (!["] Char)* ["] Spacing"#);
+
+        let mut toks = Vec::new();
+
+        while let Some(tok) = tokenizer.scan() {
+            println!("tok: {:?}", tok);
+            toks.push(tok);
+        }
+
+        assert_eq!(toks[0].identifier_as_string(), Some("Literal".to_string()));
+    }
+
 }
+    
