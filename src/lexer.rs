@@ -1,5 +1,12 @@
 use std::iter::Peekable;
 use std::str::Chars;
+
+/* TODO:
+* - rename file to parser.rs 
+*      This file used to be just lexing. But I have to combine lexing
+*      and parsing together, so it needs to be renamed
+*/
+
 /*
  From paper. We have it here for reference and to see which lexical components 
  still need to be implement it to lex.
@@ -85,8 +92,9 @@ impl RewindAndPeekable {
     }
 
     fn reset(&mut self, pos: usize) {
-        assert!(pos < self.input.len());
-        self.pos = pos;
+        if pos < self.input.len() {
+            self.pos = pos;
+        }
     }
 
 }
@@ -99,6 +107,9 @@ struct Tokenizer {
     col: usize,
 }
 
+// This is misnamed, it used to be tokens,
+// but I think I have to change the design and turn this
+// into a parser as well
 #[derive(Debug, PartialEq)]
 enum TokenType {
     Literal(Vec<Char>),
@@ -112,6 +123,8 @@ enum TokenType {
     DoubleQuote,
     LeftBracket,
     RightBracket,
+    Class(Vec<Token>),
+    Range(Range),
     Hyphen,
     And,
     Not,
@@ -130,9 +143,17 @@ enum TokenType {
 }
 
 #[derive(Debug, PartialEq)]
+struct Range {
+    start_ch: char,
+    end_ch: Option<char>
+}
+
+#[derive(Debug, PartialEq)]
 struct Char {
     ch: String
 }
+
+#[derive(Debug)]
 struct  VecChar<'a> (&'a Vec<Char>);
 
 impl<'a>  From<VecChar<'a>> for String {
@@ -144,6 +165,45 @@ impl<'a>  From<VecChar<'a>> for String {
     }
 }
 
+#[derive(Debug)]
+struct Expression(Vec<Sequence>);
+
+#[derive(Debug, Clone)]
+struct Sequence {
+    identifier: String
+}
+
+impl Sequence {
+    fn new() -> Self {
+        Sequence {
+            identifier: "".to_string()
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Prefix {
+    and_or_not: Option<char>,
+    suffix: Suffix
+}
+
+#[derive(Debug)]
+struct Suffix {
+    primary: Primary,
+    rep: Option<char>, // ? | * | + 
+}
+
+#[derive(Debug)]
+enum Primary {
+    Identifier(String),
+    Expression(Box<Expression>),
+    Literal(String),
+    Class(Vec<Range>)
+}
+
+// TODO: This class is now containing more than just tokens, should rename this
+// to Node or AstNode.
+// Also should add a len or end field
 #[derive(Debug, PartialEq)]
 struct Token {
     ttype: TokenType,
@@ -228,8 +288,8 @@ impl Tokenizer {
     fn scan(&mut self) -> Option<Token> {
         self.consume_whitespace();
         match self.input.peek() {
-            Some('\'') => self.scan_literal(),
-            Some('[') => token_arm!(self, TokenType::LeftBracket),
+            Some('\'') => self.parse_literal(),
+            Some('[') => self.scan_class(),
             Some(']') => token_arm!(self, TokenType::RightBracket),
             Some('/') => token_arm!(self, TokenType::ForwardSlash),
             Some('\\') => token_arm!(self, TokenType::BackSlash),
@@ -280,6 +340,61 @@ impl Tokenizer {
         })
     }
 
+    fn scan_class(&mut self) ->  Option<Token> {
+        // eat '['
+        let l = self.line;
+        let c = self.col;
+
+        self.consume_next();
+        let mut ranges = Vec::new();
+        loop {
+            if let Some(ch) = self.next_if(|c| ("]").contains(c)) {
+                break;
+            }
+            let range = self.scan_range();
+            if let Some(range) = range {
+                ranges.push(range)
+            }
+        }
+        Some(Token { ttype: TokenType::Class(ranges),
+        line: l,
+        col: c })
+    }
+
+    fn scan_range(&mut self) -> Option<Token> {
+        let pos = self.mark();
+        let start_ch = self.scan_char();
+        // I dont think this is correct. We should try to parse first choice,
+        // and then backtrack and try to parse second choice. 
+        // Instead we are not following the PEG parser method here.
+        if let Some(start_ch) = start_ch {
+            let next_dash = self.next_if(|c| ("-").contains(c));
+            if let Some(next_dash) = next_dash {
+                let end_ch = self.scan_char();
+                if let Some(end_ch) = end_ch {
+                    let range = Range {
+                        start_ch,
+                        end_ch: Some(end_ch) };
+                    Some(Token { ttype: TokenType::Range(range),
+                    line: self.line,
+                    col: self.col})
+                }  else {
+                    None 
+                }
+            } else {
+                let range = Range {
+                    start_ch,
+                    end_ch:  None
+                };
+                Some(Token { ttype: TokenType::Range(range),
+                             line: self.line,
+                             col: self.col })
+            }
+        }  else {
+            None
+        }
+    }
+
     fn scan_leftangle(&mut self) -> Option<Token> {
         self.consume_next();
         let c = self.next_if(|c| c == '-');
@@ -302,7 +417,8 @@ impl Tokenizer {
             }
         }
     }
-    fn scan_literal(&mut self) -> Option<Token> {
+
+    fn parse_literal(&mut self) -> Option<Token> {
         // Eat beginning single quote
         self.consume_next();
         let mut chars = Vec::new();
@@ -310,14 +426,13 @@ impl Tokenizer {
             let c = self.input.peek();
             println!("c: {:?}", c);
             if let Some('\'') = c {
-                println!("finished literals");
                 self.consume_next();
                 break;
             } else {
                 println!("current ch: {:?}", c);
+
                 match c { 
                     Some('\\') => {
-                        println!("scan_literal found \\");
                         let escaped_char = self.scan_escaped_char();
                         println!("escaped_char: {:?}", escaped_char);
                         if let Some(escaped_char) = escaped_char {
@@ -341,6 +456,26 @@ impl Tokenizer {
             line: self.line,
             col: self.col
         })
+    }
+
+    fn scan_char(&mut self) -> Option<char> {
+        let c = self.input.peek();
+        match c { 
+            Some('\\') => {
+                let escaped_char = self.scan_escaped_char();
+                println!("escaped_char: {:?}", escaped_char);
+                if let Some(escaped_char) = escaped_char {
+                    Some(escaped_char.ch.chars().next().unwrap()) 
+                } else {
+                    None
+                }
+            },
+            Some(c) => {
+                self.consume_next();
+                Some(c)
+            }
+            None => None 
+        }
     }
 
     fn scan_escaped_char(&mut self) -> Option<Char> {
@@ -372,6 +507,92 @@ impl Tokenizer {
         ch
     }
 
+    fn parse_expression(&mut self) -> Option<Expression> {
+        let seq = self.parse_seq()?;
+        self.consume_whitespace();
+        let mut seq_reps = self.seq_repetition(0);
+        let seqs = match seq_reps {
+            Some(ref mut seqsappend) => {
+                seqsappend.insert(0, seq);
+                seqsappend.clone()
+            }, 
+            None => {
+                println!("seq_rep returned nothing");
+                vec![seq]
+            }
+        };
+        Some(Expression(seqs))
+    }
+
+    fn seq_repetition(&mut self, count: usize) -> Option<Vec<Sequence>> {
+        // handles (/ Sequence)*
+        let mut seqs = Vec::new(); 
+        let mut pos;
+        loop {
+            pos = self.mark();
+            let slash = self.next_if(|c| c == '/');
+            if slash.is_none() {
+                self.reset(pos);
+                break;
+            }
+            self.consume_whitespace();
+            let seq = self.parse_seq();
+            if seq.is_none() {
+                self.reset(pos);
+                break;
+            }
+            self.consume_whitespace();
+            seqs.push(seq.unwrap());
+        }
+
+        if seqs.len() >= count {
+            Some(seqs)
+        } else {
+            None
+        }
+    }
+
+    fn parse_prefix(&mut self) -> Option<Prefix> {
+        let and_prefix = self.next_if(|c| c == '&');
+        let mut and_or_not_prefix = None;
+        if and_prefix.is_some() {
+            and_or_not_prefix = Some('&');
+        } else {
+            let or_prefix = self.next_if(|c| c == '!');
+            if or_prefix.is_some() {
+                and_or_not_prefix = Some('!');
+            }
+        }
+        let suffix = self.parse_suffix();
+        suffix.map(|suffix|  
+                   Prefix {
+                       and_or_not: and_or_not_prefix,
+                       suffix
+                   })
+    }
+
+    fn parse_suffix(&mut self) -> Option<Suffix> {
+        self.consume_whitespace();
+        unimplemented!("parse_suffix todo");
+        None
+    }
+
+    fn prefix_repetition(&mut self, count: usize) -> Option<Vec<Prefix>> {
+        None
+    }
+
+    fn parse_seq(&mut self) -> Option<Sequence> {
+        let mut seq = Sequence::new();
+        let identifier = self.scan_identifier()?; 
+        match identifier.ttype {
+            TokenType::Identifier(ident) => {
+                Some(Sequence {
+                    identifier: ident
+                })
+            },
+            _ => None
+        }
+    }
 
 }
 pub mod test { 
@@ -391,7 +612,7 @@ pub mod test {
     pub fn test_scan_nonalpha() {
         let mut tokenizer = Tokenizer::new("[]");
         let tok = tokenizer.scan();
-        if let Some(Token{ ttype: TokenType::LeftBracket, ..}) = tok {
+        if let Some(Token{ ttype: TokenType::Class(_), ..}) = tok {
         } else {
             panic!("Expected left bracket");
         }
@@ -413,9 +634,9 @@ pub mod test {
 
     
     #[test]
-    pub fn test_scan_literal() {
+    pub fn test_parse_literal() {
         let mut tokenizer = Tokenizer::new(r#"'a\n\t'"#);
-        let tok = tokenizer.scan_literal();
+        let tok = tokenizer.parse_literal();
         println!("tok: {:?}", tok);
         if let Some(Token{ ttype: TokenType::Literal(chars), ..}) = tok {
             assert_eq!(chars.len(), 3, "Expected 3 chars");
@@ -457,5 +678,15 @@ pub mod test {
         assert_eq!(toks[0].identifier_as_string(), Some("Literal".to_string()));
     }
 
+    #[test]
+    pub fn test_parse_expr() {
+        let mut tokenizer = Tokenizer::new(r#"a / b / c"#);
+        let expression = tokenizer.parse_expression();
+        println!("expr: {:?}", expression);
+        for s in &expression.as_ref().unwrap().0 {
+            println!("e.ident: {}", s.identifier);
+        }
+        assert!(expression.is_some()); 
+    }
 }
     
