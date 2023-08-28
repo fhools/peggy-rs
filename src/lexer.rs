@@ -123,7 +123,7 @@ enum TokenType {
     DoubleQuote,
     LeftBracket,
     RightBracket,
-    Class(Vec<Token>),
+    Class(Vec<Range>),
     Range(Range),
     Hyphen,
     And,
@@ -142,7 +142,7 @@ enum TokenType {
                         // '\[0-7][0-7]', or any character
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 struct Range {
     start_ch: char,
     end_ch: Option<char>
@@ -198,7 +198,8 @@ enum Primary {
     Identifier(String),
     Expression(Box<Expression>),
     Literal(String),
-    Class(Vec<Range>)
+    Class(Vec<Range>),
+    Dot,
 }
 
 // TODO: This class is now containing more than just tokens, should rename this
@@ -227,6 +228,29 @@ impl Token {
             }
         }
     }
+
+    fn literal_as_string(&self) -> Option<String> {
+        match self.ttype {
+            TokenType::Literal(ref chars) => {
+                let mut literal = "".to_string(); 
+                for c in chars {
+                    literal = format!("{}{}",literal, c.ch);
+                }
+                Some(literal)
+            },
+            _ => None
+        }
+    }
+
+    fn get_ranges(&mut self) -> Option<Vec<Range>> {
+        match self.ttype {
+            TokenType::Class(ref ranges) => {
+                Some(ranges.clone()) 
+            },
+            _ => None 
+        }
+    }
+
 }
 #[macro_export]
 macro_rules! token_arm { 
@@ -348,17 +372,17 @@ impl Tokenizer {
         self.consume_next();
         let mut ranges = Vec::new();
         loop {
-            if let Some(ch) = self.next_if(|c| ("]").contains(c)) {
+            if self.next_if(|c| ("]").contains(c)).is_some() {
                 break;
             }
             let range = self.scan_range();
-            if let Some(range) = range {
+            if let Some(Token { ttype: TokenType::Range(range), ..}) = range {
                 ranges.push(range)
             }
         }
         Some(Token { ttype: TokenType::Class(ranges),
-        line: l,
-        col: c })
+                    line: l,
+                    col: c })
     }
 
     fn scan_range(&mut self) -> Option<Token> {
@@ -573,7 +597,46 @@ impl Tokenizer {
 
     fn parse_suffix(&mut self) -> Option<Suffix> {
         self.consume_whitespace();
-        unimplemented!("parse_suffix todo");
+        let primary = self.parse_primary()?;
+        let rep = self.parse_suffix_repch();
+        Some(Suffix {
+            primary,
+            rep
+        })
+    }
+
+    // suffix ch is optional 1 or 0
+    fn parse_suffix_repch(&mut self) -> Option<char> {
+        self.next_if(|c| c == '?' || c == '*' || c == '+')
+    }
+
+    fn parse_primary(&mut self) -> Option<Primary> {
+        self.consume_whitespace();
+        let pos = self.mark();
+        if let Some(identifier) = self.scan_identifier() {
+            if let TokenType::Identifier(identifier)  = identifier.ttype {
+                return Some(Primary::Identifier(identifier));
+            }
+        } 
+        self.reset(pos);
+        if let Some(primary_expr) = self.scan_primary_expr() {
+            let expr = Box::new(primary_expr);
+            return Some(Primary::Expression(expr));
+        }
+        self.reset(pos); 
+        if let Some(lit_tok) = self.parse_literal() {
+            let lit_str = lit_tok.literal_as_string().unwrap();
+            return Some(Primary::Literal(lit_str));
+        }
+        self.reset(pos);
+        if let Some(ref mut class_tok) = self.scan_class() {
+            let ranges = class_tok.get_ranges().unwrap();
+            return Some(Primary::Class(ranges));
+        }
+        self.reset(pos);
+        if let Some(_) = self.next_if(|c| c == '.') {
+            return Some(Primary::Dot);
+        }
         None
     }
 
@@ -592,6 +655,10 @@ impl Tokenizer {
             },
             _ => None
         }
+    }
+
+    fn scan_primary_expr(&mut self) -> Option<Expression> {
+        None
     }
 
 }
